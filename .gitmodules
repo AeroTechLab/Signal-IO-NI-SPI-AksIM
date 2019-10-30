@@ -1,0 +1,9 @@
+[submodule "debug"]
+	path = debug
+	url = https://github.com/EESC-MKGroup/Simple-Data-Logging.git
+[submodule "threads"]
+	path = threads
+	url = https://github.com/EESC-MKGroup/Simple-Multithreading.git
+[submodule "interface"]
+	path = interface
+	url = https://github.com/EESC-MKGroup/Signal-IO-Interface.git
