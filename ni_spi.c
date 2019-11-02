@@ -2,22 +2,35 @@
 //                                                                            //
 //  Copyright (c) 2016-2019 Leonardo Consoni <leonardojc@protonmail.com>      //
 //                                                                            //
-//  This file is part of RobRehabSystem.                                      //
+//  This file is part of Signal-IO-NISPI.                                     //
 //                                                                            //
-//  RobRehabSystem is free software: you can redistribute it and/or modify    //
+//  Signal-IO-NISPI is free software: you can redistribute it and/or modify   //
 //  it under the terms of the GNU Lesser General Public License as published  //
 //  by the Free Software Foundation, either version 3 of the License, or      //
 //  (at your option) any later version.                                       //
 //                                                                            //
-//  RobRehabSystem is distributed in the hope that it will be useful,         //
+//  Signal-IO-NISPI is distributed in the hope that it will be useful,        //
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of            //
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the              //
 //  GNU Lesser General Public License for more details.                       //
 //                                                                            //
 //  You should have received a copy of the GNU Lesser General Public License  //
-//  along with RobRehabSystem. If not, see <http://www.gnu.org/licenses/>.    //
+//  along with Signal-IO-NISPI. If not, see <http://www.gnu.org/licenses/>.   //
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
+
+// PLEASE READ BEFORE TRYING TO USE THIS CODE!!
+//
+// National Instruments sucks. Seriously, their products aren't worth a pile of crap
+//
+// That said, for making that SPI interface work, the clock generator and chip selector tasks must be pulse generators
+// The clock period must be at most 1/16 of chip select low time in order to allow a complete 16-bit integer reading
+// And you must be able to perform many reads inside a single control time step, as an average filter is applied
+// The encoder read (MISO) task must be a single run 16 samples aquisition, using clock for timing and chip select falling edge
+// for triggering (that way, the reading will be restarted every time the slave is enabled)
+//
+// Clock and Chip Selector signals are shared among all devices, but each one has its own MISO digital line
+// That's not the standard way to build a SPI connection, but again, blame those NI bastards and their artificial limitations
 
 
 #include "signal_io.h"
@@ -32,6 +45,9 @@
 #define DEBUG_MESSAGE_LENGTH 256
 
 #define INT16_MAX 65536
+
+#define CHANNELS_MAX_NUMBER 8
+#define READ_SAMPLES_NUMBER 5
 
 const size_t TRANSFER_BUFFER_LENGTH = 16;
 
@@ -67,7 +83,7 @@ static void UnloadTaskData( SignalIOTask );
 
 static bool CheckTask( SignalIOTask );
 
-int InitDevice( const char* taskConfig )
+long int InitDevice( const char* taskConfig )
 {
   if( tasksList == NULL ) tasksList = kh_init( TaskInt );
   
@@ -89,10 +105,10 @@ int InitDevice( const char* taskConfig )
   }
   //else if( insertionStatus == 0 ) { DEBUG_PRINT( "task key %d already exists (iterator %u)", taskKey, newTaskIndex ); }
   
-  return (int) kh_key( tasksList, newTaskIndex );
+  return (long int) kh_key( tasksList, newTaskIndex );
 }
 
-void EndDevice( int taskID )
+void EndDevice( long int taskID )
 {
   khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
   if( taskIndex == kh_end( tasksList ) ) return;
@@ -112,17 +128,17 @@ void EndDevice( int taskID )
   }
 }
 
-void Reset( int taskID )
+void Reset( long int taskID )
 {
   return;
 }
 
-bool HasError( int taskID )
+bool HasError( long int taskID )
 {
   return false;
 }
 
-size_t GetMaxInputSamplesNumber( int taskID )
+size_t GetMaxInputSamplesNumber( long int taskID )
 {
   khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
   if( taskIndex == kh_end( tasksList ) ) return 0;
@@ -130,7 +146,7 @@ size_t GetMaxInputSamplesNumber( int taskID )
   return 1;
 }
 
-size_t Read( int taskID, unsigned int channel, double* ref_value )
+size_t Read( long int taskID, unsigned int channel, double* ref_value )
 {
   khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
   if( taskIndex == kh_end( tasksList ) ) return 0;
@@ -148,7 +164,7 @@ size_t Read( int taskID, unsigned int channel, double* ref_value )
   return 1;
 }
 
-bool CheckInputChannel( int taskID, unsigned int channel )
+bool CheckInputChannel( long int taskID, unsigned int channel )
 {
   khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
   if( taskIndex == kh_end( tasksList ) ) return false;
@@ -168,12 +184,12 @@ bool CheckInputChannel( int taskID, unsigned int channel )
   return true;
 }
 
-bool IsOutputEnabled( int taskID )
+bool IsOutputEnabled( long int taskID )
 {
   return true;
 }
 
-bool Write( int taskID, unsigned int channel, double value )
+bool Write( long int taskID, unsigned int channel, double value )
 {
   khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
   if( taskIndex == kh_end( tasksList ) ) return false;
@@ -189,7 +205,7 @@ bool Write( int taskID, unsigned int channel, double value )
   return true;
 }
 
-bool AcquireOutputChannel( int taskID, unsigned int channel )
+bool AcquireOutputChannel( long int taskID, unsigned int channel )
 {
   khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
   if( taskIndex == kh_end( tasksList ) ) return false;
@@ -209,7 +225,7 @@ bool AcquireOutputChannel( int taskID, unsigned int channel )
   return true;
 }
 
-void ReleaseOutputChannel( int taskID, unsigned int channel )
+void ReleaseOutputChannel( long int taskID, unsigned int channel )
 {
   khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
   if( taskIndex == kh_end( tasksList ) ) return;
@@ -233,6 +249,9 @@ static void* AsyncTransfer( void* callbackData )
   
   int32 aquiredSamplesCount;
   
+  int32 channelSamplesTable[ CHANNELS_MAX_NUMBER ][ READ_SAMPLES_NUMBER ] = { 0 };
+  size_t channelReadsCount = 0;
+  
   task->isRunning = true;
   
   DEBUG_PRINT( "initializing read thread %lx", Thread_GetID() );
@@ -253,15 +272,31 @@ static void* AsyncTransfer( void* callbackData )
       for( size_t channel = 0; channel < task->channelsNumber; channel++ )
       {
         int32 inputChannelValue = 0; 
-        for( int sampleIndex = 0; sampleIndex < TRANSFER_BUFFER_LENGTH; sampleIndex++ )
-          inputChannelValue += ( ( task->misoData[ ( sampleIndex + 1 ) * task->channelsNumber + channel ] ) << ( TRANSFER_BUFFER_LENGTH - 1 - sampleIndex ) );
+        for( int bitIndex = 0; bitIndex < TRANSFER_BUFFER_LENGTH; bitIndex++ )
+          inputChannelValue += ( ( task->misoData[ ( bitIndex + 1 ) * task->channelsNumber + channel ] ) << ( TRANSFER_BUFFER_LENGTH - 1 - bitIndex ) );
+        channelSamplesTable[ channel ][ channelReadsCount ] = inputChannelValue;
+      }
+      
+      channelReadsCount++;
+    }
+    
+    if( channelReadsCount >= READ_SAMPLES_NUMBER )
+    {
+      for( size_t channel = 0; channel < task->channelsNumber; channel++ )
+      {
+        int32 inputChannelAverageValue = 0;
+        for( int sampleIndex = 0; sampleIndex < channelReadsCount; sampleIndex++ )
+            inputChannelAverageValue += channelSamplesTable[ channel ][ sampleIndex ] / channelReadsCount;
         int32 overflowsNumber = task->inputValuesList[ channel ] / INT16_MAX;
         if( task->inputValuesList[ channel ] < 0 ) overflowsNumber--;
-        int32 newInputValue = overflowsNumber * INT16_MAX + inputChannelValue;
-        if( task->inputValuesList[ channel ] - newInputValue > INT16_MAX / 2 ) overflowsNumber++;
-        if( task->inputValuesList[ channel ] - newInputValue < -INT16_MAX / 2 ) overflowsNumber--;
-        task->inputValuesList[ channel ] = overflowsNumber * INT16_MAX + inputChannelValue;
+        int32 newInputValue = overflowsNumber * INT16_MAX + inputChannelAverageValue;
+        if( ( task->inputValuesList[ channel ] - newInputValue ) > ( INT16_MAX / 2 ) ) overflowsNumber++;
+        if( ( task->inputValuesList[ channel ] - newInputValue ) < ( -INT16_MAX / 2 ) ) overflowsNumber--;
+        task->inputValuesList[ channel ] = overflowsNumber * INT16_MAX + inputChannelAverageValue;
+        //fprintf( stderr, "aquired %d samples with value %d (overflows=%d, corrected=%d)\r", aquiredSamplesCount, inputChannelValue, overflowsNumber, task->inputValuesList[ channel ] );
       }
+      
+      channelReadsCount = 0;
     }
   }
   
@@ -298,15 +333,6 @@ SignalIOTask LoadTaskData( char* taskConfig )
   SignalIOTask newTask = (SignalIOTask) malloc( sizeof(SignalIOTaskData) );
   memset( newTask, 0, sizeof(SignalIOTask) );
   
-  // National Instruments sucks. Seriously, their products aren't worth a pile of crap
-  //
-  // That said, for making that SPI interface work, the clock generator and chip selector tasks must be pulse generators
-  // The clock period must be at most 1/16 of chip select low time in order to allow a complete 16-bit integer reading
-  // The encoder read (MISO) task must be a single run 16 samples aquisition, using clock for timing and chip select falling edge
-  // for triggering (that way, the reading will be restarted every time the slave is enabled)
-  //
-  // Clock and Chip Selector signals are shared among all devices, but each one has its own MISO digital line
-  // That's not the standard way to build a SPI connection, but again, blame those NI bastards and their artificial limitations
   int32 clockGeneratorError = DAQmxLoadTask( strtok( taskConfig, " " ), &(newTask->clockGenerator) );
   int32 misoReaderError = DAQmxLoadTask( strtok( NULL, " " ), &(newTask->misoReader) );
   newTask->mosiWriter = NULL;
