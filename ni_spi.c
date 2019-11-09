@@ -55,16 +55,12 @@ typedef struct _SignalIOTaskData
 {
   TaskHandle clockGenerator;
   TaskHandle misoReader;
-  TaskHandle mosiWriter;
   TaskHandle chipSelector;
   Thread threadID;
   volatile bool isRunning;
   uInt16* misoData;
   int32* inputValuesList;
   bool* inputsUsedList;
-  uInt16* mosiData;
-  int32* outputValuesList;
-  bool* outputsUsedList;
   uInt32 channelsNumber;
 }
 SignalIOTaskData;
@@ -186,59 +182,22 @@ bool CheckInputChannel( long int taskID, unsigned int channel )
 
 bool IsOutputEnabled( long int taskID )
 {
-  return true;
+  return false;
 }
 
 bool Write( long int taskID, unsigned int channel, double value )
 {
-  khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
-  if( taskIndex == kh_end( tasksList ) ) return false;
-  
-  SignalIOTask task = kh_value( tasksList, taskIndex );
-  
-  if( !(task->isRunning) ) return false;
-  
-  if( channel > task->channelsNumber ) return false;
-  
-  task->outputValuesList[ channel ] = value;
-  
-  return true;
+  return false;
 }
 
 bool AcquireOutputChannel( long int taskID, unsigned int channel )
 {
-  khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
-  if( taskIndex == kh_end( tasksList ) ) return false;
-  
-  //DEBUG_PRINT( "aquiring channel %u from task %d", channel, taskID );
-  
-  SignalIOTask task = kh_value( tasksList, taskIndex );
-  
-  if( channel > task->channelsNumber ) return false;
-  
-  if( !(task->outputsUsedList[ channel ]) ) return false;
-  
-  task->outputsUsedList[ channel ] = true;
-  
-  if( !(task->isRunning) ) task->threadID = Thread_Start( AsyncTransfer, task, THREAD_JOINABLE );
-  
-  return true;
+  return false;
 }
 
 void ReleaseOutputChannel( long int taskID, unsigned int channel )
 {
-  khint_t taskIndex = kh_get( TaskInt, tasksList, (khint_t) taskID );
-  if( taskIndex == kh_end( tasksList ) ) return;
-  
-  SignalIOTask task = kh_value( tasksList, taskIndex );
-  
-  if( !(task->isRunning) ) return;
-  
-  if( channel > task->channelsNumber ) return;
-  
-  task->outputsUsedList[ channel ] = false; 
-  
-  (void) CheckTask( task );
+  return;
 }
 
 
@@ -310,7 +269,7 @@ bool CheckTask( SignalIOTask task )
   bool isStillUsed = false;
   for( size_t channel = 0; channel < task->channelsNumber; channel++ )
   {
-    if( task->inputsUsedList[ channel ] || task->outputsUsedList[ channel ] )
+    if( task->inputsUsedList[ channel ] )
     {
       isStillUsed = true;
       break;
@@ -335,7 +294,6 @@ SignalIOTask LoadTaskData( char* taskConfig )
   
   int32 clockGeneratorError = DAQmxLoadTask( strtok( taskConfig, " " ), &(newTask->clockGenerator) );
   int32 misoReaderError = DAQmxLoadTask( strtok( NULL, " " ), &(newTask->misoReader) );
-  newTask->mosiWriter = NULL;
   int32 chipSelectorError = DAQmxLoadTask( strtok( NULL, " " ), &(newTask->chipSelector) );
   if( clockGeneratorError >= 0 && misoReaderError >= 0 && chipSelectorError >= 0 )
   {
@@ -347,11 +305,6 @@ SignalIOTask LoadTaskData( char* taskConfig )
       memset( newTask->inputsUsedList, 0, newTask->channelsNumber * sizeof(bool) );
       newTask->misoData = (uInt16*) calloc( newTask->channelsNumber * ( TRANSFER_BUFFER_LENGTH + 1 ), sizeof(uInt16) );
       newTask->inputValuesList = (int32*) calloc( newTask->channelsNumber, sizeof(int32) );
-      
-      newTask->outputsUsedList = (bool*) calloc( newTask->channelsNumber, sizeof(bool) );
-      memset( newTask->outputsUsedList, 0, newTask->channelsNumber * sizeof(bool) );
-      newTask->mosiData = (uInt16*) calloc( newTask->channelsNumber * ( TRANSFER_BUFFER_LENGTH + 1 ), sizeof(uInt16) );
-      newTask->outputValuesList = (int32*) calloc( newTask->channelsNumber, sizeof(int32) );
   
       if( DAQmxStartTask( newTask->chipSelector ) < 0 || DAQmxStartTask( newTask->clockGenerator ) < 0 )
       {
@@ -400,10 +353,6 @@ void UnloadTaskData( SignalIOTask task )
   if( task->inputsUsedList != NULL ) free( task->inputsUsedList );
   if( task->misoData != NULL ) free( task->misoData );
   if( task->inputValuesList != NULL ) free( task->inputValuesList );
-  
-  if( task->outputsUsedList != NULL ) free( task->outputsUsedList );
-  if( task->mosiData != NULL ) free( task->mosiData );
-  if( task->outputValuesList != NULL ) free( task->outputValuesList );
   
   free( task );
 }
